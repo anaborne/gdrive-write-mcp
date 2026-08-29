@@ -1,0 +1,55 @@
+{
+  "name": "gdrive-write-mcp",
+  "version": "0.1.0",
+  "description": "An MCP server that gives assistants real write access to Google Drive: in-place content updates, appends, and find/replace edits that preserve file IDs and revision history.",
+  "license": "MIT",
+  "author": "Immanuel Anaborne <immanuel.anaborne@gmail.com>",
+  "homepage": "https://github.com/anaborne/gdrive-write-mcp",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anaborne/gdrive-write-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/anaborne/gdrive-write-mcp/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "google-drive",
+    "llm",
+    "claude",
+    "ai-tools"
+  ],
+  "type": "module",
+  "bin": {
+    "gdrive-write-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "start": "node dist/index.js",
+    "authorize": "node scripts/authorize.mjs",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build",
+    "verify": "npm run build && node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "googleapis": "^176.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}
