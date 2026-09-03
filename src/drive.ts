@@ -1,6 +1,7 @@
 import type { drive_v3 } from 'googleapis';
-import { RevisionConflictError } from './errors.js';
+import { RevisionConflictError, ToolError } from './errors.js';
 import {
+  GOOGLE_SLIDES,
   exportMimeFor,
   guessMimeFromName,
   importMimeFor,
@@ -35,6 +36,11 @@ export interface WriteOptions {
   expectedRevisionToken?: string;
 }
 
+/** Last resort when Drive returns neither field. It compares equal to itself, so a
+ * guarded write against it is refused in writeFile instead of being let through by two
+ * sentinels matching each other. */
+export const UNKNOWN_REVISION_TOKEN = 'unknown';
+
 /**
  * Drive exposes headRevisionId only for files with real binary content. Native editor
  * files have none, and those are the ones a human has open in a browser tab, so the
@@ -43,7 +49,7 @@ export interface WriteOptions {
 export function revisionToken(file: drive_v3.Schema$File): string {
   if (file.headRevisionId) return file.headRevisionId;
   if (file.modifiedTime) return `mtime:${file.modifiedTime}`;
-  return 'unknown';
+  return UNKNOWN_REVISION_TOKEN;
 }
 
 function toMetadata(file: drive_v3.Schema$File): FileMetadata {
@@ -95,7 +101,7 @@ export async function readFile(drive: drive_v3.Drive, fileId: string): Promise<R
   return { metadata, base64Content: buffer.toString('base64'), readAs: metadata.mimeType };
 }
 
-/** In place: the file ID, sharing, comments and location survive, and the previous
+/** In place: the file ID, sharing settings and location survive, and the previous
  * content stays in File > Version history. */
 export async function writeFile(
   drive: drive_v3.Drive,
@@ -105,8 +111,28 @@ export async function writeFile(
 ): Promise<FileMetadata> {
   const current = await getMetadata(drive, fileId);
 
-  if (options.expectedRevisionToken !== undefined && options.expectedRevisionToken !== current.revisionToken) {
-    throw new RevisionConflictError(fileId, options.expectedRevisionToken, current.revisionToken);
+  if (options.expectedRevisionToken !== undefined) {
+    if (current.revisionToken === UNKNOWN_REVISION_TOKEN) {
+      throw new ToolError(
+        `Cannot check for a concurrent edit on file ${fileId}: Drive returned neither a headRevisionId ` +
+          `nor a modifiedTime, so there is no current token to compare yours against. Re-read the file ` +
+          `and try again. Dropping expectedRevisionToken would write with no guard at all.`,
+        'REVISION_UNKNOWN',
+      );
+    }
+
+    if (options.expectedRevisionToken !== current.revisionToken) {
+      throw new RevisionConflictError(fileId, options.expectedRevisionToken, current.revisionToken);
+    }
+  }
+
+  if (current.mimeType === GOOGLE_SLIDES) {
+    throw new ToolError(
+      `Cannot write to ${current.name}: it is a Google Slides presentation. Drive has no plain-text ` +
+        `import format for a presentation, so this write would come back as a 400 from the API. ` +
+        `Slides are read-only through this server. Edit the deck in Google Slides.`,
+      'SLIDES_READ_ONLY',
+    );
   }
 
   const uploadMime = isGoogleNative(current.mimeType) ? importMimeFor(current.mimeType) : current.mimeType;
@@ -160,24 +186,40 @@ export interface RevisionSummary {
   size?: number;
 }
 
+const REVISION_API_PAGE_SIZE = 1000; // Drive's documented maximum for revisions.list
+
+/** Drive returns revisions oldest first and offers no ordering parameter, so every page
+ * is walked and the list reversed before the newest are handed back. Reading one page and
+ * stopping would hide the edit that was just made, which is the thing callers ask for. */
 export async function listRevisions(
   drive: drive_v3.Drive,
   fileId: string,
   pageSize = 20,
 ): Promise<RevisionSummary[]> {
-  const res = await drive.revisions.list({
-    fileId,
-    pageSize,
-    fields: 'revisions(id, modifiedTime, size, lastModifyingUser(displayName))',
-  });
+  const collected: drive_v3.Schema$Revision[] = [];
+  let pageToken: string | undefined;
 
-  const revisions = res.data.revisions ?? [];
-  return revisions.map((rev) => ({
-    id: rev.id ?? '',
-    modifiedTime: rev.modifiedTime ?? '',
-    lastModifyingUser: rev.lastModifyingUser?.displayName ?? undefined,
-    size: rev.size != null ? Number(rev.size) : undefined,
-  }));
+  do {
+    const res = await drive.revisions.list({
+      fileId,
+      pageSize: REVISION_API_PAGE_SIZE,
+      pageToken,
+      fields: 'nextPageToken, revisions(id, modifiedTime, size, lastModifyingUser(displayName))',
+    });
+
+    collected.push(...(res.data.revisions ?? []));
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return collected
+    .reverse()
+    .slice(0, pageSize)
+    .map((rev) => ({
+      id: rev.id ?? '',
+      modifiedTime: rev.modifiedTime ?? '',
+      lastModifyingUser: rev.lastModifyingUser?.displayName ?? undefined,
+      size: rev.size != null ? Number(rev.size) : undefined,
+    }));
 }
 
 export interface SearchResult {

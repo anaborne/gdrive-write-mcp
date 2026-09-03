@@ -45,7 +45,7 @@ if (expected !== undefined && expected !== current.revisionToken) {
 }
 ```
 
-This is optimistic concurrency, the same shape as an HTTP `If-Match` / `ETag` exchange, or the `expectedMtimeMs` guard in file-sync tools.
+This is optimistic concurrency, done on the client. Drive's `files.update` accepts no precondition, so the token is checked against a separate `files.get` issued immediately before the write. An HTTP `If-Match` / `ETag` exchange is enforced at the server, where the check and the write are one operation. This one is not, so a write that lands between the check and the update is not caught. That window is milliseconds wide. The `expectedMtimeMs` guard in file-sync tools has the same shape and the same limit.
 
 ### Why the token is opaque
 
@@ -60,7 +60,7 @@ mtime:<RFC3339 modifiedTime>  otherwise
 
 Callers treat it as opaque, reading it and handing it back. Making it a string means the fallback can change later without breaking any caller.
 
-`modifiedTime` has one-second granularity, so two writes inside the same second could theoretically slip past the fallback guard. I accepted that limitation. The realistic race here is a human against an assistant over tens of seconds. Sub-second machine contention is not the case this guard is built for.
+`modifiedTime` is millisecond-resolution, so two writes inside the same millisecond could theoretically slip past the fallback guard. I accepted that limitation. The realistic race here is a human against an assistant over tens of seconds. Sub-second machine contention is not the case this guard is built for.
 
 ### Why writes are guarded by default in the targeted tools
 
@@ -87,7 +87,7 @@ An ambiguous match raises an error, because a wrong-occurrence edit is silent. T
 
 `isTextual()` gates whether downloaded bytes are decoded to a string. A false positive here is the worst bug this server could have. Decode a PNG as UTF-8, write it back, and the file is destroyed with no error anywhere.
 
-So the classifier is an allow-list, `text/*` plus a fixed set of textual `application/*` types. An unrecognised type is treated as binary and base64-encoded, which is the failure-safe direction. The worst case there is an inconvenient round trip, and never a corrupted file.
+So the classifier is an allow-list, `text/*` plus a fixed set of textual `application/*` types. An unrecognised type is treated as binary and base64-encoded, which is the failure-safe direction. Writing binary content back is not supported at all: the write tools refuse a binary file instead of uploading text over its bytes. The worst case is an edit you have to make outside Drive and re-upload.
 
 ---
 
@@ -99,7 +99,7 @@ Native files are exported on read and converted on write:
 |---|---|---|
 | Docs | `text/markdown` | `text/markdown` |
 | Sheets | `text/csv` | `text/csv` |
-| Slides | `text/plain` | `text/plain` |
+| Slides | `text/plain` | not supported |
 
 Docs export to markdown so the round trip is closer to lossless. Headings, lists, and emphasis survive as markup, where a plain-text export would flatten them into undifferentiated text and write them back as a document with no structure.
 
@@ -111,7 +111,7 @@ Native target names have no file extension, so extension-based MIME guessing is 
 
 This bug shipped, and `npm run verify` against a live account caught it while the unit suite stayed green, because the mock had no opinion about which MIME type Drive would parse.
 
-The round trip is not fully lossless. Markdown has no representation for comments, suggestions, footnotes, images, or complex tables. Slides are worse. A `text/plain` export keeps words and loses layout entirely, so writing back to a native Slides file is destructive to its design. Treat Slides as read-mostly.
+The round trip is not fully lossless. Markdown has no representation for comments, suggestions, footnotes, images, or complex tables. Slides are worse. Drive has no plain-text import format for a presentation, so a write to a native Slides file would come back as a 400. `writeFile` refuses one with a named error instead of passing that 400 up. Slides are read-only here.
 
 ---
 

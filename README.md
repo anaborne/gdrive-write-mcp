@@ -1,6 +1,6 @@
 # gdrive-write-mcp
 
-An [MCP](https://modelcontextprotocol.io) server that gives AI assistants real write access to Google Drive. It does in-place content updates, appends, and find/replace edits that preserve a file's ID, sharing settings, comments, and revision history.
+An [MCP](https://modelcontextprotocol.io) server that gives AI assistants real write access to Google Drive. It does in-place content updates, appends, and find/replace edits that preserve a file's ID, sharing settings, and revision history.
 
 [![CI](https://github.com/anaborne/gdrive-write-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/anaborne/gdrive-write-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -23,7 +23,7 @@ The result has the right text in it. Everything else about the file is wrong:
 |---|---|---|
 | **File ID** | unchanged | new. Every existing link, bookmark, and API reference now points at a trashed file |
 | **Revision history** | one more revision | gone. No "restore previous version" |
-| **Comments** | preserved | gone |
+| **Comments** | preserved on uploaded files. Anchored comments on a native Doc are orphaned, since the whole body is re-imported | gone |
 | **Sharing** | preserved | reset. Collaborators silently lose access |
 | **Bin** | untouched | fills with orphaned near-duplicates |
 
@@ -65,7 +65,7 @@ read_file(fileId)                    → revisionToken: "0B1a2…"
 update_file_content(fileId, content, expectedRevisionToken: "0B1a2…")
 ```
 
-If the file has changed, the write is refused with an error that tells the model what to do (re-read, re-apply, write again). The targeted tools (`replace_in_file`, `append_to_file`, `prepend_to_file`) read and write inside a single call, so they carry the guard automatically and you never handle a token yourself.
+If the file has changed before the write is issued, the write is refused with an error that tells the model what to do (re-read, re-apply, write again). The targeted tools (`replace_in_file`, `append_to_file`, `prepend_to_file`) read and write inside a single call, so they carry the guard automatically and you never handle a token yourself.
 
 Drive only exposes `headRevisionId` for files with real binary content. Google-native Docs and Sheets do not have one, and those are the files where concurrent human editing is most likely, since they are the ones someone has open in a browser tab. The token falls back to `modifiedTime` there, so native files are guarded too.
 
@@ -76,7 +76,7 @@ Drive stores two very different kinds of thing, and conflating them is the most 
 - Uploaded files (`text/markdown`, `application/pdf`, …). Bytes in, bytes out.
 - Native editor files (`application/vnd.google-apps.document`, …). No bytes of their own. Read by exporting to a concrete format, written by uploading a format Drive converts back on ingest.
 
-This server detects which is which and routes accordingly. Docs export to markdown so that a read-modify-write round trip preserves headings, lists, and emphasis. A plain-text export would silently flatten the document. Binary files are base64-encoded, so a PDF can never be corrupted by passing through a text tool.
+This server detects which is which and routes accordingly. Docs export to markdown so that a read-modify-write round trip preserves headings, lists, and emphasis. A plain-text export would silently flatten the document. Binary files come back base64-encoded on read, so a PDF is never mangled by a text tool. Writing binary content back is not supported, and the write tools refuse it.
 
 ---
 
@@ -111,7 +111,7 @@ cp .env.example .env
 npm run authorize
 ```
 
-This opens a one-time consent flow on `http://localhost:4181` and prints a refresh token. Add it to `.env`:
+This prints a one-time Google consent URL for you to open, listens on `http://localhost:4181/oauth2callback` for the redirect, and prints a refresh token. Add it to `.env`:
 
 ```env
 GOOGLE_CLIENT_ID=1234567890-abcdef.apps.googleusercontent.com
@@ -331,7 +331,7 @@ src/
   errors.ts   error types written to be actionable by a model
 ```
 
-The suite covers the find/replace edge cases (regex-looking literals, `$&` in replacements, multi-line targets, ambiguous matches), the append/prepend seam logic, MIME classification, and the concurrency guard, including that a conflicting write never reaches the API.
+The suite covers the find/replace edge cases (regex-looking literals, `$&` in replacements, multi-line targets, ambiguous matches), the append/prepend seam logic, MIME classification, and the concurrency guard, including that a conflicting write never reaches the API. It also pins the refusals that keep a bad write from reaching Drive at all.
 
 ---
 

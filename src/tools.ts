@@ -120,8 +120,9 @@ export function registerTools(server: McpServer, drive: drive_v3.Drive): void {
     {
       title: 'List file revisions',
       description:
-        'Show the revision history Drive has kept for a file, newest first. Useful for confirming ' +
-        'that an in-place edit landed, or for finding the version to roll back to.',
+        'Show the revision history Drive has kept for a file, most recent first, up to pageSize ' +
+        'entries. Useful for confirming that an in-place edit landed, or for finding the version ' +
+        'to roll back to.',
       inputSchema: {
         fileId: z.string().describe('Drive file ID.'),
         pageSize: z.number().int().min(1).max(100).optional().describe('Max revisions (default 20).'),
@@ -145,10 +146,12 @@ export function registerTools(server: McpServer, drive: drive_v3.Drive): void {
     {
       title: 'Replace a Drive file’s content',
       description:
-        'Overwrite a file’s entire content IN PLACE, keeping its ID, sharing settings, comments, and ' +
-        'location, and recording a new revision. This is destructive: everything currently in the file ' +
+        'Overwrite a file’s entire content IN PLACE, keeping its ID, sharing settings, and location, ' +
+        'and recording a new revision. This is destructive: everything currently in the file ' +
         'is replaced. Prefer replace_in_file or append_to_file for targeted changes, and reach for ' +
         'this only when you are genuinely rewriting the whole document. ' +
+        'Text files and native Google files only. Binary files are refused, since this server has ' +
+        'no way to write bytes back. ' +
         'Pass expectedRevisionToken from your most recent read so a concurrent edit by someone else ' +
         'is refused rather than silently overwritten.',
       inputSchema: {
@@ -167,10 +170,19 @@ export function registerTools(server: McpServer, drive: drive_v3.Drive): void {
     async ({ fileId, content, expectedRevisionToken }) =>
       guard(async () => {
         const before = await readFile(drive, fileId);
+        if (before.content === undefined) {
+          throw new ToolError(
+            `Cannot overwrite ${before.metadata.name}: it is a binary file ` +
+              `(${before.metadata.mimeType}). This server cannot write binary files. Edit it outside ` +
+              `Drive and re-upload it.`,
+            'NOT_TEXT',
+          );
+        }
+
         const meta = await writeFile(drive, fileId, content, { expectedRevisionToken });
         return ok(
           `Updated ${meta.name} in place.\n` +
-            `${summarizeChange(before.content ?? '', content)}\n` +
+            `${summarizeChange(before.content, content)}\n` +
             `revisionToken: ${meta.revisionToken}`,
         );
       }),
@@ -204,7 +216,8 @@ export function registerTools(server: McpServer, drive: drive_v3.Drive): void {
         if (before.content === undefined) {
           throw new ToolError(
             `Cannot do a text replacement on ${before.metadata.name}: it is a binary file ` +
-              `(${before.metadata.mimeType}). Use update_file_content with base64 instead.`,
+              `(${before.metadata.mimeType}). This server cannot write binary files. Edit it outside ` +
+              `Drive and re-upload it.`,
             'NOT_TEXT',
           );
         }
