@@ -1,6 +1,8 @@
 import type { drive_v3 } from 'googleapis';
 import { RevisionConflictError, ToolError } from './errors.js';
 import {
+  GOOGLE_DOC,
+  GOOGLE_SHEET,
   GOOGLE_SLIDES,
   exportMimeFor,
   guessMimeFromName,
@@ -101,6 +103,11 @@ export async function readFile(drive: drive_v3.Drive, fileId: string): Promise<R
   return { metadata, base64Content: buffer.toString('base64'), readAs: metadata.mimeType };
 }
 
+/** An allow-list, because importMimeFor's fallback is text/plain and Drive takes that for
+ * a Doc or a Sheet only. A Site, a Drawing, a Form or a Jamboard would reach files.update
+ * as plain text and be refused there, so they are refused here by name instead. */
+const WRITABLE_NATIVE_TYPES = new Set([GOOGLE_DOC, GOOGLE_SHEET]);
+
 /** In place: the file ID, sharing settings and location survive, and the previous
  * content stays in File > Version history. */
 export async function writeFile(
@@ -111,12 +118,35 @@ export async function writeFile(
 ): Promise<FileMetadata> {
   const current = await getMetadata(drive, fileId);
 
+  // Ahead of the revision check: a refusal no retry can clear has to be the one the caller
+  // sees, or a stale token on a Slides deck sends it round a loop that ends here anyway.
+  if (isGoogleNative(current.mimeType) && !WRITABLE_NATIVE_TYPES.has(current.mimeType)) {
+    if (current.mimeType === GOOGLE_SLIDES) {
+      throw new ToolError(
+        `Cannot write to ${current.name}: it is a Google Slides presentation. Drive does not accept a ` +
+          `plain-text import for a presentation, so this write cannot succeed. ` +
+          `Slides are read-only through this server. Edit the deck in Google Slides.`,
+        'SLIDES_READ_ONLY',
+      );
+    }
+
+    throw new ToolError(
+      `Cannot write to ${current.name}: it is a native Google file of type ${current.mimeType}. ` +
+        `Only Docs and Sheets have a text format Drive converts back on upload, so every other ` +
+        `native type is read-only through this server. Edit it in its own Google editor.`,
+      'NATIVE_TYPE_READ_ONLY',
+    );
+  }
+
   if (options.expectedRevisionToken !== undefined) {
     if (current.revisionToken === UNKNOWN_REVISION_TOKEN) {
       throw new ToolError(
         `Cannot check for a concurrent edit on file ${fileId}: Drive returned neither a headRevisionId ` +
-          `nor a modifiedTime, so there is no current token to compare yours against. Re-read the file ` +
-          `and try again. Dropping expectedRevisionToken would write with no guard at all.`,
+          `nor a modifiedTime, so there is no current token to compare yours against. A re-read returns ` +
+          `the same two missing fields, so retrying will not change this. This file cannot be guarded: ` +
+          `use update_file_content with no expectedRevisionToken if you accept an unguarded write. ` +
+          `replace_in_file, append_to_file and prepend_to_file always send a token, so they cannot ` +
+          `write this file at all.`,
         'REVISION_UNKNOWN',
       );
     }
@@ -124,15 +154,6 @@ export async function writeFile(
     if (options.expectedRevisionToken !== current.revisionToken) {
       throw new RevisionConflictError(fileId, options.expectedRevisionToken, current.revisionToken);
     }
-  }
-
-  if (current.mimeType === GOOGLE_SLIDES) {
-    throw new ToolError(
-      `Cannot write to ${current.name}: it is a Google Slides presentation. Drive has no plain-text ` +
-        `import format for a presentation, so this write would come back as a 400 from the API. ` +
-        `Slides are read-only through this server. Edit the deck in Google Slides.`,
-      'SLIDES_READ_ONLY',
-    );
   }
 
   const uploadMime = isGoogleNative(current.mimeType) ? importMimeFor(current.mimeType) : current.mimeType;
@@ -188,18 +209,32 @@ export interface RevisionSummary {
 
 const REVISION_API_PAGE_SIZE = 1000; // Drive's documented maximum for revisions.list
 
-/** Drive returns revisions oldest first and offers no ordering parameter, so every page
- * is walked and the list reversed before the newest are handed back. Reading one page and
- * stopping would hide the edit that was just made, which is the thing callers ask for. */
+/** 50 pages is 50,000 revisions, past anything a real file carries. The cap exists so a
+ * server that keeps handing back a nextPageToken cannot spin here forever. */
+const MAX_REVISION_PAGES = 50;
+
+export interface RevisionListResult {
+  revisions: RevisionSummary[];
+  /** True when the walk stopped on the page cap or a repeated token, which means older
+   * pages were read and newer revisions were never fetched. */
+  truncated: boolean;
+}
+
+/** revisions.list offers no ordering parameter, so every page is walked and the result is
+ * sorted on modifiedTime before the newest are handed back. Reading one page and stopping
+ * would hide the edit that was just made, which is the thing callers ask for. The cost is
+ * one API call per 1000 revisions, paid on every call. */
 export async function listRevisions(
   drive: drive_v3.Drive,
   fileId: string,
   pageSize = 20,
-): Promise<RevisionSummary[]> {
+): Promise<RevisionListResult> {
   const collected: drive_v3.Schema$Revision[] = [];
+  const seenTokens = new Set<string>();
   let pageToken: string | undefined;
+  let truncated = false;
 
-  do {
+  for (let page = 0; page < MAX_REVISION_PAGES; page += 1) {
     const res = await drive.revisions.list({
       fileId,
       pageSize: REVISION_API_PAGE_SIZE,
@@ -208,11 +243,25 @@ export async function listRevisions(
     });
 
     collected.push(...(res.data.revisions ?? []));
-    pageToken = res.data.nextPageToken ?? undefined;
-  } while (pageToken);
 
-  return collected
-    .reverse()
+    const nextPageToken = res.data.nextPageToken ?? undefined;
+    if (nextPageToken === undefined) {
+      pageToken = undefined;
+      break;
+    }
+    // A token Drive has already handed out means the same page again, forever.
+    if (seenTokens.has(nextPageToken)) {
+      truncated = true;
+      break;
+    }
+    seenTokens.add(nextPageToken);
+    pageToken = nextPageToken;
+  }
+
+  if (pageToken !== undefined) truncated = true;
+
+  const revisions = collected
+    .sort((a, b) => (b.modifiedTime ?? '').localeCompare(a.modifiedTime ?? ''))
     .slice(0, pageSize)
     .map((rev) => ({
       id: rev.id ?? '',
@@ -220,6 +269,8 @@ export async function listRevisions(
       lastModifyingUser: rev.lastModifyingUser?.displayName ?? undefined,
       size: rev.size != null ? Number(rev.size) : undefined,
     }));
+
+  return { revisions, truncated };
 }
 
 export interface SearchResult {

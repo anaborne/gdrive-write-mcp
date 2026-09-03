@@ -23,7 +23,7 @@ The result has the right text in it. Everything else about the file is wrong:
 |---|---|---|
 | **File ID** | unchanged | new. Every existing link, bookmark, and API reference now points at a trashed file |
 | **Revision history** | one more revision | gone. No "restore previous version" |
-| **Comments** | preserved on uploaded files. Anchored comments on a native Doc are orphaned, since the whole body is re-imported | gone |
+| **Comments** | preserved on the file object. Anchored comments may be orphaned by a full-content rewrite | gone |
 | **Sharing** | preserved | reset. Collaborators silently lose access |
 | **Bin** | untouched | fills with orphaned near-duplicates |
 
@@ -54,7 +54,7 @@ The result has the right text in it. Everything else about the file is wrong:
 
 ## Two things it gets right
 
-### 1. Concurrent edits are refused
+### 1. Concurrent edits are refused, on a best-effort client-side check
 
 The failure mode of a naive write tool is quiet and expensive. You read a document, spend thirty seconds thinking, and write it back over the paragraph a colleague added in the meantime. Nobody gets an error. Nobody notices until the paragraph is missed, days later.
 

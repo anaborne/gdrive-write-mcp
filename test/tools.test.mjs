@@ -62,7 +62,7 @@ test('update_file_content refuses a binary file instead of writing text over its
     content: original.toString('base64'),
   });
 
-  assert.equal(result.isError, true, 'writing a binary file must fail, not report success');
+  assert.equal(result.isError, true, 'a binary file must be refused');
   assert.match(result.content[0].text, /binary file/i);
   assert.match(result.content[0].text, /cannot write binary files/i);
   assert.equal(calls.update.length, 0, 'the corrupting write must never reach the API');

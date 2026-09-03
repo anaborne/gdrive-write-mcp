@@ -99,7 +99,8 @@ Native files are exported on read and converted on write:
 |---|---|---|
 | Docs | `text/markdown` | `text/markdown` |
 | Sheets | `text/csv` | `text/csv` |
-| Slides | `text/plain` | not supported |
+| Slides | `text/plain` | refused |
+| Any other `vnd.google-apps` type | `text/plain` | refused |
 
 Docs export to markdown so the round trip is closer to lossless. Headings, lists, and emphasis survive as markup, where a plain-text export would flatten them into undifferentiated text and write them back as a document with no structure.
 
@@ -111,7 +112,9 @@ Native target names have no file extension, so extension-based MIME guessing is 
 
 This bug shipped, and `npm run verify` against a live account caught it while the unit suite stayed green, because the mock had no opinion about which MIME type Drive would parse.
 
-The round trip is not fully lossless. Markdown has no representation for comments, suggestions, footnotes, images, or complex tables. Slides are worse. Drive has no plain-text import format for a presentation, so a write to a native Slides file would come back as a 400. `writeFile` refuses one with a named error instead of passing that 400 up. Slides are read-only here.
+The round trip is not fully lossless. Markdown has no representation for comments, suggestions, footnotes, images, or complex tables. Slides are worse. Drive does not accept a plain-text import for a presentation, so a write to a native Slides file cannot succeed.
+
+Writing to a native file is therefore an allow-list of Docs and Sheets. The import table above has only those two, and `importMimeFor` falls back to `text/plain` for everything else, so a Site, a Drawing, a Form or a Jamboard would otherwise reach `files.update` as plain text and be refused by Google in terms that name nothing. `writeFile` refuses each of them by name before the call is made. Slides get their own message, since a deck is the one a caller is most likely to try.
 
 ---
 
@@ -129,8 +132,8 @@ with what this server returns:
 Conflict: file 1a2b3c has changed since you read it. You passed
 expectedRevisionToken="0B1" but the file is now at "0B2". Someone else (a person
 in the Drive UI, or another process) wrote to it in between. Re-read the file,
-re-apply your change to the new content, and write again. Do not retry with
-force unless the caller has explicitly said to discard the other edit.
+re-apply your change to the new content, and write again. This server has no
+force or override option.
 ```
 
 The second recovers on its own. The same reasoning shapes the 401/403/404 messages in `errors.ts`, which name the specific misconfiguration (wrong scope, wrong account, ID-versus-name confusion).

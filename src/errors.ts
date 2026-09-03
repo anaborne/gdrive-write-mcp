@@ -24,7 +24,7 @@ export class RevisionConflictError extends ToolError {
         `You passed expectedRevisionToken="${expected}" but the file is now at "${actual}". ` +
         `Someone else (a person in the Drive UI, or another process) wrote to it in between. ` +
         `Re-read the file, re-apply your change to the new content, and write again. ` +
-        `Do not retry with force unless the caller has explicitly said to discard the other edit.`,
+        `This server has no force or override option.`,
       'REVISION_CONFLICT',
     );
   }

@@ -122,7 +122,9 @@ export function registerTools(server: McpServer, drive: drive_v3.Drive): void {
       description:
         'Show the revision history Drive has kept for a file, most recent first, up to pageSize ' +
         'entries. Useful for confirming that an in-place edit landed, or for finding the version ' +
-        'to roll back to.',
+        'to roll back to. Drive pages this endpoint and offers no ordering parameter, so the whole ' +
+        'history is walked on every call, one API call per 1000 revisions. A Doc with thousands of ' +
+        'autosaved revisions is a slow call whatever pageSize you ask for.',
       inputSchema: {
         fileId: z.string().describe('Drive file ID.'),
         pageSize: z.number().int().min(1).max(100).optional().describe('Max revisions (default 20).'),
@@ -131,12 +133,18 @@ export function registerTools(server: McpServer, drive: drive_v3.Drive): void {
     },
     async ({ fileId, pageSize }) =>
       guard(async () => {
-        const revisions = await listRevisions(drive, fileId, pageSize ?? 20);
+        const { revisions, truncated } = await listRevisions(drive, fileId, pageSize ?? 20);
         if (revisions.length === 0) return ok('No revisions recorded for this file.');
+
+        const listing = revisions
+          .map((r) => `${r.id}  ${r.modifiedTime}${r.lastModifyingUser ? `  by ${r.lastModifyingUser}` : ''}`)
+          .join('\n');
+
+        if (!truncated) return ok(listing);
         return ok(
-          revisions
-            .map((r) => `${r.id}  ${r.modifiedTime}${r.lastModifyingUser ? `  by ${r.lastModifyingUser}` : ''}`)
-            .join('\n'),
+          `${listing}\n\n[truncated: the walk through this file's revision pages stopped early, so ` +
+            `revisions newer than the ones above may exist and are missing from this list. Check the ` +
+            `file's modifiedTime with get_file_metadata to confirm what the latest edit was.]`,
         );
       }),
   );
@@ -265,7 +273,9 @@ export function registerTools(server: McpServer, drive: drive_v3.Drive): void {
         const before = await readFile(drive, fileId);
         if (before.content === undefined) {
           throw new ToolError(
-            `Cannot append to ${before.metadata.name}: it is a binary file (${before.metadata.mimeType}).`,
+            `Cannot append to ${before.metadata.name}: it is a binary file ` +
+              `(${before.metadata.mimeType}). This server cannot write binary files. Edit it outside ` +
+              `Drive and re-upload it.`,
             'NOT_TEXT',
           );
         }
@@ -298,7 +308,9 @@ export function registerTools(server: McpServer, drive: drive_v3.Drive): void {
         const before = await readFile(drive, fileId);
         if (before.content === undefined) {
           throw new ToolError(
-            `Cannot prepend to ${before.metadata.name}: it is a binary file (${before.metadata.mimeType}).`,
+            `Cannot prepend to ${before.metadata.name}: it is a binary file ` +
+              `(${before.metadata.mimeType}). This server cannot write binary files. Edit it outside ` +
+              `Drive and re-upload it.`,
             'NOT_TEXT',
           );
         }
