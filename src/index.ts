@@ -35,7 +35,7 @@ async function main(): Promise<void> {
         'Read, edit, and write Google Drive files in place. Edits preserve the file ID, its sharing ' +
         'settings, and its revision history, so a document can be updated repeatedly without ' +
         'accumulating copies. Read a file before editing it and pass the revisionToken back on write; ' +
-        'if the write is refused as a conflict, re-read and merge rather than forcing.',
+        'if the write is refused as a conflict, re-read and merge. This server has no force option.',
     },
   );
 

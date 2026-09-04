@@ -158,8 +158,8 @@ export function registerTools(server: McpServer, drive: drive_v3.Drive): void {
         'and recording a new revision. This is destructive: everything currently in the file ' +
         'is replaced. Prefer replace_in_file or append_to_file for targeted changes, and reach for ' +
         'this only when you are genuinely rewriting the whole document. ' +
-        'Text files and native Google files only. Binary files are refused, since this server has ' +
-        'no way to write bytes back. ' +
+        'Text files, Google Docs, and Google Sheets only. Every other native Google type is ' +
+        'refused, and so are binary files, since this server has no way to write bytes back. ' +
         'Pass expectedRevisionToken from your most recent read so a concurrent edit by someone else ' +
         'is refused rather than silently overwritten.',
       inputSchema: {
